@@ -5,7 +5,6 @@ import (
 	"archive/zip"
 	"bytes"
 	"compress/gzip"
-	"context"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -13,11 +12,10 @@ import (
 	"net/http"
 	"strings"
 
+	"github.com/nwaples/rardecode"
 	routing "github.com/qiangxue/fasthttp-routing"
+	"github.com/ulikunitz/xz"
 	"github.com/valyala/fasthttp"
-
-	"google.golang.org/api/drive/v3"
-	"google.golang.org/api/googleapi"
 )
 
 type GetFileRequest struct {
@@ -30,9 +28,12 @@ type SuccessResponse struct {
 }
 
 type ExtractData struct {
-	Status    bool
-	ZipReader *zip.Reader
-	TarReader *tar.Reader
+	Status       bool
+	ZipReader    *zip.Reader
+	TarReader    *tar.Reader
+	RarReader    *rardecode.Reader
+	SevenZReader *xz.Reader
+	SimpleFile   *bytes.Buffer
 }
 
 func extractArchive(archive []byte, filetype string) ExtractData {
@@ -41,21 +42,52 @@ func extractArchive(archive []byte, filetype string) ExtractData {
 	case "zip":
 		reader, err := zip.NewReader(bytes.NewReader(archive), int64(len(archive)))
 		if err != nil {
-			log.Println("extractArchive: Extract %s failed %s", filetype, err.Error)
+			log.Println("extractArchive: Zip NewReader %s failed %s", filetype, err.Error)
 			return response
 		}
 		response.Status = true
 		response.ZipReader = reader
+		log.Println("extractArchive: Zip NewReader success")
 		return response
 	case "tar.gz":
 		uncompressedStream, err := gzip.NewReader(bytes.NewReader(archive))
 		if err != nil {
-			log.Fatal("ExtractTarGz: NewReader failed")
+			log.Println("extractArchive: TarGz NewReader failed: ", filetype, err.Error)
+			return response
 		}
 
 		reader := tar.NewReader(uncompressedStream)
 		response.Status = true
 		response.TarReader = reader
+		log.Println("extractArchive: TarGz NewReader success")
+		return response
+	case "rar":
+		reader := bytes.NewReader(archive)
+		decoder, err := rardecode.NewReader(reader, "")
+		if err != nil {
+			log.Println("extractArchive: Rar NewReader failed: ", filetype, err.Error)
+			return response
+		}
+		response.Status = true
+		response.RarReader = decoder
+		log.Println("extractArchive: Rar NewReader success")
+		return response
+	case "7z":
+		archiveFile := bytes.NewReader(archive)
+		decoder, err := xz.NewReader(archiveFile)
+		if err != nil {
+			log.Println("extractArchive: 7z NewReader failed: ", filetype, err.Error)
+			return response
+		}
+		tarReader := tar.NewReader(decoder)
+		response.Status = true
+		response.TarReader = tarReader
+		log.Println("extractArchive: 7z NewReader success")
+		return response
+	default:
+		response.Status = true
+		response.SimpleFile = bytes.NewBuffer(archive)
+		log.Println("extractArchive: File return success")
 		return response
 	}
 	return response
@@ -64,39 +96,42 @@ func extractArchive(archive []byte, filetype string) ExtractData {
 func GetFfile(url string) ([]byte, bool) {
 	resp, err := http.Get(url)
 	if err != nil {
+		log.Println("GetFfile: Failed file download %s", err.Error)
 		return make([]byte, 0), false
 	}
 	defer resp.Body.Close()
 
 	body, err := io.ReadAll(resp.Body)
 	if err != nil {
+		log.Println("GetFfile: Failed file reading %s", err.Error)
 		return make([]byte, 0), false
 	}
 
 	return body, true
 }
 
-func UploadFile(fileBody bytes.Buffer, fileName string, dirName string) bool {
-	ctx := context.Background()
-	srv, err := drive.NewService(ctx)
-	if err != nil {
-		log.Fatal("Unable to access Drive API:", err)
-		return false
-	}
-
-	fileReader := bytes.NewReader(fileBody.Bytes())
-
-	res, err := srv.Files.Create(
-		&drive.File{
-			Parents: []string{dirName},
-			Name:    fileName,
-		},
-	).Media(fileReader, googleapi.ChunkSize(int(fileBody.Len()))).Do()
-	if err != nil {
-		log.Fatalln(err)
-		return false
-	}
-	log.Println("UploadFile: upload file %s success %s", fileName, res.Id)
+func UploadFile(fileBody *bytes.Buffer, fileName string, dirName string) bool {
+	// ctx := context.Background()
+	// srv, err := drive.NewService(ctx)
+	// if err != nil {
+	//   log.Fatal("Unable to access Drive API:", err)
+	//   return false
+	// }
+	//
+	// fileReader := bytes.NewReader(fileBody.Bytes())
+	//
+	// res, err := srv.Files.Create(
+	//   &drive.File{
+	//     Parents: []string{dirName},
+	//     Name:    fileName,
+	//   },
+	// ).Media(fileReader, googleapi.ChunkSize(int(fileBody.Len()))).Do()
+	// if err != nil {
+	//   log.Fatalln(err)
+	//   return false
+	// }
+	// log.Println("UploadFile: upload file %s success %s", fileName, res.Id)
+	log.Println("UploadFile: upload file %s success %s", fileName, "1")
 
 	// res2, err := srv.Permissions.Create(res.Id, &drive.Permission{
 	//   Role: "reader",
@@ -153,10 +188,10 @@ func GetUploadFile(url string) bool {
 				continue
 			}
 
-			go UploadFile(fileContents, file.Name, dirName)
+			go UploadFile(&fileContents, file.Name, dirName)
 		}
 		return true
-	case "tar.gz":
+	case "tar.gz", "7z":
 		for true {
 			header, err := readerStruct.TarReader.Next()
 
@@ -178,7 +213,7 @@ func GetUploadFile(url string) bool {
 					continue
 				}
 
-				go UploadFile(fileContents, header.Name, dirName)
+				go UploadFile(&fileContents, header.Name, dirName)
 
 			default:
 				log.Println(
@@ -190,9 +225,54 @@ func GetUploadFile(url string) bool {
 
 		}
 		return true
+	case "rar":
+		for {
+			header, err := readerStruct.RarReader.Next()
+			if err != nil {
+				break
+			}
+
+			if header.IsDir {
+				continue
+			}
+
+			var fileContents bytes.Buffer
+			_, err = io.Copy(&fileContents, readerStruct.RarReader)
+			if err != nil {
+				log.Println("GetUploadFile: Failed copy file content in memory %s %s", header.Name, err.Error)
+				continue
+			}
+
+			go UploadFile(&fileContents, header.Name, dirName)
+
+			return true
+		}
+	// case "7z":
+	//   for {
+	//     header, err := readerStruct.SevenZReader.Next()
+	//     if err != nil {
+	//       if err == io.EOF {
+	//         break
+	//       }
+	//       log.Println("GetUploadFile: Failed copy file content in memory %s %s", header.Name, err.Error)
+	//     }
+	//
+	//     if header.IsDir() {
+	//       continue
+	//     }
+	//     var fileContents bytes.Buffer
+	//     _, err = io.Copy(&fileContents, readerStruct.SevenZReader)
+	//     if err != nil {
+	//       log.Println("GetUploadFile: Failed copy file content in memory %s %s", header.Name, err.Error)
+	//       continue
+	//     }
+	//
+	//     go UploadFile(&fileContents, header.Name, dirName)
+	//   }
+	//   return true
 	default:
-		log.Println("GetUploadFile: Unknown archive type: %s", archiveType)
-		return false
+		go UploadFile(readerStruct.SimpleFile, dirName, "/")
+		return true
 	}
 
 	return true
