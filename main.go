@@ -17,6 +17,7 @@ import (
 	"github.com/valyala/fasthttp"
 
 	"google.golang.org/api/drive/v3"
+	"google.golang.org/api/googleapi"
 )
 
 type GetFileRequest struct {
@@ -83,12 +84,14 @@ func UploadFile(fileBody bytes.Buffer, fileName string, dirName string) bool {
 		return false
 	}
 
+	fileReader := bytes.NewReader(fileBody.Bytes())
+
 	res, err := srv.Files.Create(
 		&drive.File{
 			Parents: []string{dirName},
 			Name:    fileName,
 		},
-	).Media(fileBody, googleapi.ChunkSize(int(len(fileBody)))).Do()
+	).Media(fileReader, googleapi.ChunkSize(int(fileBody.Len()))).Do()
 	if err != nil {
 		log.Fatalln(err)
 		return false
@@ -162,7 +165,7 @@ func GetUploadFile(url string) bool {
 			}
 
 			if err != nil {
-				log.Permission("ExtractTarGz: Next() failed: %s", err.Error())
+				log.Println("ExtractTarGz: Next() failed: %s", err.Error())
 				continue
 			}
 
@@ -171,7 +174,7 @@ func GetUploadFile(url string) bool {
 				var fileContents bytes.Buffer
 				_, err = io.Copy(&fileContents, readerStruct.TarReader)
 				if err != nil {
-					log.Println("GetUploadFile: Failed copy file content in memory %s %s", file.FileInfo, err.Error)
+					log.Println("GetUploadFile: Failed copy file content in memory %s %s", header.Name, err.Error)
 					continue
 				}
 
@@ -218,5 +221,5 @@ func main() {
 	})
 
 	fmt.Println("Starting server...")
-	panic(fasthttp.ListenAndServe(":8080", router.HandleRequest))
+	panic(fasthttp.ListenAndServe(":8088", router.HandleRequest))
 }
