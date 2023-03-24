@@ -5,6 +5,7 @@ import (
 	"archive/zip"
 	"bytes"
 	"compress/gzip"
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -16,6 +17,8 @@ import (
 	routing "github.com/qiangxue/fasthttp-routing"
 	"github.com/ulikunitz/xz"
 	"github.com/valyala/fasthttp"
+	"google.golang.org/api/drive/v2"
+	"google.golang.org/api/googleapi"
 )
 
 type GetFileRequest struct {
@@ -111,27 +114,26 @@ func GetFfile(url string) ([]byte, bool) {
 }
 
 func UploadFile(fileBody *bytes.Buffer, fileName string, dirName string) bool {
-	// ctx := context.Background()
-	// srv, err := drive.NewService(ctx)
-	// if err != nil {
-	//   log.Fatal("Unable to access Drive API:", err)
-	//   return false
-	// }
-	//
-	// fileReader := bytes.NewReader(fileBody.Bytes())
-	//
-	// res, err := srv.Files.Create(
-	//   &drive.File{
-	//     Parents: []string{dirName},
-	//     Name:    fileName,
-	//   },
-	// ).Media(fileReader, googleapi.ChunkSize(int(fileBody.Len()))).Do()
-	// if err != nil {
-	//   log.Fatalln(err)
-	//   return false
-	// }
-	// log.Println("UploadFile: upload file %s success %s", fileName, res.Id)
-	log.Println("UploadFile: upload file %s success %s", fileName, "1")
+	ctx := context.Background()
+	srv, err := drive.NewService(ctx)
+	if err != nil {
+		log.Fatal("Unable to access Drive API:", err)
+		return false
+	}
+
+	fileReader := bytes.NewReader(fileBody.Bytes())
+
+	res, err := srv.Files.Create(
+		&drive.File{
+			Parents: []string{dirName},
+			Name:    fileName,
+		},
+	).Media(fileReader, googleapi.ChunkSize(int(fileBody.Len()))).Do()
+	if err != nil {
+		log.Fatalln(err)
+		return false
+	}
+	log.Println("UploadFile: upload file %s success %s", fileName, res.Id)
 
 	// res2, err := srv.Permissions.Create(res.Id, &drive.Permission{
 	//   Role: "reader",
