@@ -17,7 +17,7 @@ import (
 	routing "github.com/qiangxue/fasthttp-routing"
 	"github.com/ulikunitz/xz"
 	"github.com/valyala/fasthttp"
-	"google.golang.org/api/drive/v2"
+	"google.golang.org/api/drive/v3"
 	"google.golang.org/api/googleapi"
 )
 
@@ -125,7 +125,7 @@ func UploadFile(fileBody *bytes.Buffer, fileName string, dirName string) bool {
 
 	res, err := srv.Files.Create(
 		&drive.File{
-			Parents: []string{dirName},
+			Parents: []*drive.ParentReference{{Id: dirName}},
 			Name:    fileName,
 		},
 	).Media(fileReader, googleapi.ChunkSize(int(fileBody.Len()))).Do()
